@@ -1,11 +1,4 @@
 {
-  "buildCommand": "pip install -r backend/requirements.txt",
-  "cleanUrls": true,
-  "functions": {
-    "backend/api/index.py": {
-      "runtime": "@vercel/python@4.5.0"
-    }
-  },
   "routes": [
     { "src": "/(.*)", "dest": "backend/api/index.py" }
   ]
