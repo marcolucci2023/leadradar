@@ -1,7 +1,11 @@
-import sys
-import os
+from fastapi import FastAPI
 
-# Ajoute le dossier backend au chemin Python
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+app = FastAPI()
 
-from app.main import app
+@app.get("/")
+def hello():
+    return {"status": "LeadRadar API is alive!"}
+
+@app.get("/health")
+def health():
+    return {"ok": True}
