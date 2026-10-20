@@ -365,7 +365,7 @@ export default function DashboardPage() {
     try {
       const subject = lead.ai_message_subject || 'Proposition de collaboration - ' + lead.name;
       const body = lead.ai_message_body || 'Bonjour, je me permets de vous contacter...';
-      await sendLeadEmail(token, lead.email as string, subject, body);
+      await sendLeadEmail(token, lead.email || "", subject, body);
       alert('Email envoye avec succes !');
     } catch (err: unknown) {
       alert('Erreur: ' + (err instanceof Error ? err.message : 'inconnue'));
