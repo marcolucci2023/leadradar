@@ -434,6 +434,56 @@ def _parse_overpass_results(data: dict, business_type: str) -> list:
     return results
 
 
+
+# ============================================================
+# FALLBACK DUCKDUCKGO (quand Overpass est down)
+# ============================================================
+async def _search_duckduckgo_fallback(city: str, business_type: str) -> dict:
+    """Fallback via DuckDuckGo HTML quand Overpass echoue."""
+    from bs4 import BeautifulSoup
+    import urllib.parse
+
+    query = f"{business_type} {city}"
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}&kl=fr-fr"
+    print(f"🦆 Fallback DuckDuckGo: {query}")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            soup = BeautifulSoup(resp.text, "html.parser")
+            results = []
+            for r in soup.select(".result")[:15]:
+                title_el = r.select_one(".result__title a")
+                snippet_el = r.select_one(".result__snippet")
+                if not title_el:
+                    continue
+                name = title_el.get_text(strip=True)
+                href = title_el.get("href", "")
+                snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                if not name or "wikipedia" in href.lower():
+                    continue
+                results.append({
+                    "name": name,
+                    "address": snippet[:120],
+                    "phone": "",
+                    "website": href if href.startswith("http") else "",
+                    "email": "",
+                    "lat": None,
+                    "lon": None,
+                    "business_type": business_type,
+                    "opening_hours": "",
+                    "description": snippet,
+                    "google_maps": "",
+                })
+            print(f"✅ {len(results)} resultats depuis DuckDuckGo")
+            return {"results": results, "total": len(results), "source": "DuckDuckGo (fallback)"}
+    except Exception as e:
+        print(f"❌ DuckDuckGo echoue: {e}")
+        return {"results": [], "total": 0, "source": "all_sources_failed"}
+
+
 # ============================================================
 # FONCTION PRINCIPALE (avec retry + 5 serveurs)
 # ============================================================
@@ -483,4 +533,5 @@ async def search_businesses(city: str, business_type: str, radius: int = 5000) -
             await asyncio.sleep(2)
 
     print("❌ Tous les serveurs Overpass ont échoué après 2 tours")
-    return {"results": [], "total": 0, "source": "all_overpass_servers_failed"}
+    print("🔄 Activation du fallback DuckDuckGo...")
+    return await _search_duckduckgo_fallback(city, business_type)
