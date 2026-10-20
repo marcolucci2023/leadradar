@@ -1,9 +1,11 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function request(path: string, options: RequestInit = {}) {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: { "Content-Type": "application/json", ...options.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders, ...options.headers },
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
