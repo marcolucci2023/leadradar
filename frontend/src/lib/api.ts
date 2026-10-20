@@ -84,7 +84,7 @@ export async function sendLeadEmail(
   subject: string,
   body: string
 ): Promise<{ status: string; id: string }> {
-  const res = await fetch(`${API}/leads/send-email`, {
+  const res = await fetch(`${API_URL}/leads/send-email`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

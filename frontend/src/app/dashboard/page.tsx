@@ -357,6 +357,26 @@ export default function DashboardPage() {
     router.replace("/login");
   };
 
+
+  const handleSendEmail = async (lead: LeadResult) => {
+    const token = localStorage.getItem('token') || '';
+    const key = getLeadKey(lead);
+    setSendingIds(prev => new Set(prev).add(key));
+    try {
+      const subject = lead.ai_message_subject || 'Proposition de collaboration - ' + lead.name;
+      const body = lead.ai_message_body || 'Bonjour, je me permets de vous contacter...';
+      await sendLeadEmail(token, lead.email, subject, body);
+      alert('Email envoye avec succes !');
+    } catch (err: unknown) {
+      alert('Erreur: ' + (err instanceof Error ? err.message : 'inconnue'));
+    } finally {
+      setSendingIds(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
   if (!ready) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-950 text-white">
