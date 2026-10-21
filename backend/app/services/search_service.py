@@ -1,4 +1,5 @@
 import httpx
+from app.services.web_search import search_telecontact_list
 import re
 import time
 
@@ -519,10 +520,20 @@ async def search_businesses(city: str, business_type: str, radius: int = 5000) -
                         results = _parse_overpass_results(data, business_type)
                         server_name = server_url.split("/")[2]
                         print(f"✅ {len(results)} résultats depuis {server_name}")
+                        # Lancer Telecontact en parallele pour enrichir
+                        try:
+                            tc_results = await search_telecontact_list(business_type, city)
+                        except Exception:
+                            tc_results = []
+                        existing_names = {r["name"].lower().strip() for r in results}
+                        for tc in tc_results:
+                            if tc["name"].lower().strip() not in existing_names:
+                                results.append(tc)
+                                existing_names.add(tc["name"].lower().strip())
                         return {
                             "results": results,
                             "total": len(results),
-                            "source": f"Overpass ({server_name})",
+                            "source": f"Overpass ({server_name}) + Telecontact" if tc_results else f"Overpass ({server_name})",
                         }
                     else:
                         print(f"⚠️ HTTP {resp.status_code}")
@@ -535,5 +546,23 @@ async def search_businesses(city: str, business_type: str, radius: int = 5000) -
             await asyncio.sleep(2)
 
     print("❌ Tous les serveurs Overpass ont échoué après 2 tours")
-    print("🔄 Activation du fallback Nominatim...")
-    return await _search_nominatim_fallback(city, business_type)
+    print("🔄 Activation du fallback Nominatim + Telecontact...")
+    nominatim_result = await _search_nominatim_fallback(city, business_type)
+    try:
+        tc_results = await search_telecontact_list(business_type, city)
+    except Exception as e:
+        print(f"⚠️ Telecontact echoue: {e}")
+        tc_results = []
+    # Fusionner et dedupliquer
+    all_results = nominatim_result.get("results", [])
+    existing_names = {r["name"].lower().strip() for r in all_results}
+    for tc in tc_results:
+        if tc["name"].lower().strip() not in existing_names:
+            all_results.append(tc)
+            existing_names.add(tc["name"].lower().strip())
+    sources = []
+    if nominatim_result.get("total", 0) > 0:
+        sources.append("Nominatim")
+    if tc_results:
+        sources.append("Telecontact")
+    return {"results": all_results, "total": len(all_results), "source": " + ".join(sources) or "fallback"}

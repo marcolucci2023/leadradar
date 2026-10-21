@@ -288,6 +288,10 @@ export default function DashboardPage() {
       await handleAnalyze(lead);
       done++;
       setBatchProgress({ done, total: targets.length });
+      // Delai pour respecter le rate limit Gemini (15 req/min, 2 appels/lead)
+      if (done < targets.length) {
+        await new Promise((r) => setTimeout(r, 8000));
+      }
     }
     setBatchProgress(null);
     showToast(
