@@ -19,6 +19,7 @@ MENA_CITIES = {
     "tetouan": (35.5785, -5.3684, "Tétouan, Maroc"),
     "nador": (35.1681, -2.9333, "Nador, Maroc"),
     "el jadida": (33.2316, -8.5007, "El Jadida, Maroc"),
+    "eljadida": (33.2316, -8.5007, "El Jadida, Maroc"),
     "mohammedia": (33.6866, -7.3830, "Mohammedia, Maroc"),
     "dakhla": (23.6848, -15.9579, "Dakhla, Maroc"),
     "laayoune": (27.1536, -13.2033, "Laâyoune, Maroc"),
@@ -436,51 +437,56 @@ def _parse_overpass_results(data: dict, business_type: str) -> list:
 
 
 # ============================================================
-# FALLBACK DUCKDUCKGO (quand Overpass est down)
+# FALLBACK NOMINATIM (quand Overpass est down)
 # ============================================================
-async def _search_duckduckgo_fallback(city: str, business_type: str) -> dict:
-    """Fallback via DuckDuckGo HTML quand Overpass echoue."""
-    from bs4 import BeautifulSoup
+async def _search_nominatim_fallback(city: str, business_type: str) -> dict:
+    """Fallback via Nominatim (meme base OSM qu Overpass)."""
     import urllib.parse
-
-    query = f"{business_type} {city}"
-    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}&kl=fr-fr"
-    print(f"🦆 Fallback DuckDuckGo: {query}")
-
+    query = f"{business_type} in {city}"
+    url = f"https://nominatim.openstreetmap.org/search?q={urllib.parse.quote(query)}&format=json&limit=50&addressdetails=1&countrycodes=ma,tn,dz,eg,fr,sn,ci"
+    print(f"🗺️ Fallback Nominatim: {query}")
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            })
-            soup = BeautifulSoup(resp.text, "html.parser")
+            resp = await client.get(url, headers={"User-Agent": "LeadRadar/1.0"})
+            if resp.status_code != 200:
+                print(f"⚠️ Nominatim HTTP {resp.status_code}")
+                return {"results": [], "total": 0, "source": "nominatim_failed"}
+            data = resp.json()
             results = []
-            for r in soup.select(".result")[:15]:
-                title_el = r.select_one(".result__title a")
-                snippet_el = r.select_one(".result__snippet")
-                if not title_el:
+            for item in data:
+                name = item.get("name", "")
+                if not name:
+                    name = item.get("display_name", "").split(",")[0]
+                if not name:
                     continue
-                name = title_el.get_text(strip=True)
-                href = title_el.get("href", "")
-                snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-                if not name or "wikipedia" in href.lower():
-                    continue
+                addr = item.get("address", {})
+                address_parts = []
+                for k in ["road", "house_number", "city", "town", "village"]:
+                    if addr.get(k):
+                        address_parts.append(addr[k])
+                address = ", ".join(address_parts)
+                lat = float(item.get("lat", 0))
+                lon = float(item.get("lon", 0))
+                osm_type = item.get("type", business_type)
+                phone = addr.get("phone", "")
+                website = addr.get("website", "")
                 results.append({
                     "name": name,
-                    "address": snippet[:120],
-                    "phone": "",
-                    "website": href if href.startswith("http") else "",
+                    "address": address,
+                    "phone": phone,
+                    "website": website,
                     "email": "",
-                    "lat": None,
-                    "lon": None,
-                    "business_type": business_type,
+                    "lat": lat,
+                    "lon": lon,
+                    "business_type": osm_type,
                     "opening_hours": "",
-                    "description": snippet,
-                    "google_maps": "",
+                    "description": item.get("display_name", ""),
+                    "google_maps": f"https://www.google.com/maps?q={lat},{lon}" if lat else "",
                 })
-            print(f"✅ {len(results)} resultats depuis DuckDuckGo")
-            return {"results": results, "total": len(results), "source": "DuckDuckGo (fallback)"}
+            print(f"✅ {len(results)} resultats depuis Nominatim")
+            return {"results": results, "total": len(results), "source": "Nominatim (fallback)"}
     except Exception as e:
-        print(f"❌ DuckDuckGo echoue: {e}")
+        print(f"❌ Nominatim echoue: {e}")
         return {"results": [], "total": 0, "source": "all_sources_failed"}
 
 
@@ -498,15 +504,11 @@ async def search_businesses(city: str, business_type: str, radius: int = 5000) -
     query = _build_overpass_query(lat, lon, radius, business_type)
 
     # 2 tours complets de tous les serveurs
-    for tour in range(2):
-        if tour > 0:
-            print(f"🔄 Tour {tour + 1} — attente 5s avant retry...")
-            await asyncio.sleep(5)
-
+    for tour in range(1):
         for server_url in OVERPASS_SERVERS:
             try:
                 print(f"📡 Essai: {server_url.split('/')[2]} (tour {tour+1})")
-                async with httpx.AsyncClient(timeout=45.0) as client:
+                async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.post(
                         server_url,
                         data={"data": query},
@@ -533,5 +535,5 @@ async def search_businesses(city: str, business_type: str, radius: int = 5000) -
             await asyncio.sleep(2)
 
     print("❌ Tous les serveurs Overpass ont échoué après 2 tours")
-    print("🔄 Activation du fallback DuckDuckGo...")
-    return await _search_duckduckgo_fallback(city, business_type)
+    print("🔄 Activation du fallback Nominatim...")
+    return await _search_nominatim_fallback(city, business_type)
