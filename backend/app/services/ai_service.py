@@ -31,7 +31,7 @@ async def _call_gemini(prompt: str, max_retries: int = 3) -> str:
         except Exception as e:
             err = str(e)
             if ("429" in err or "503" in err) and attempt < max_retries - 1:
-                wait = (attempt + 1) * 15
+                wait = 65  # quota RPM Gemini se réinitialise chaque minute
                 print(f"⏳ Rate limit, retry dans {wait}s...")
                 await asyncio.sleep(wait)
             else:

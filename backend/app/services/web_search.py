@@ -273,7 +273,7 @@ async def scrape_google_maps(name: str, city: str) -> dict:
 async def scrape_telecontact(name: str, city: str) -> dict:
     out = {"phone": "", "address": "", "website": "", "email": ""}
     city_clean = city.split(",")[0].strip()
-    url = f"https://www.telecontact.ma/recherche/?q={quote_plus(name)}&ou={quote_plus(city_clean)}"
+    url = f"https://www.telecontact.ma/{quote_plus(name.lower())}/{quote_plus(city_clean.lower())}"
 
     try:
         async with httpx.AsyncClient(
@@ -377,67 +377,108 @@ async def scrape_website_for_email(website: str) -> str:
 # 4b. TELECONTACT.MA - RECHERCHE LISTE (pour search initial)
 # ============================================================
 async def search_telecontact_list(business_type: str, city: str) -> list:
-    """Scrape la page de resultats Telecontact pour trouver plusieurs commerces."""
+    """Scrape Telecontact avec pagination (3 pages)."""
     city_clean = city.split(',')[0].strip()
     query = f"{business_type} {city_clean}"
     urls_to_try = [
-        f"https://www.telecontact.ma/recherche/?q={quote_plus(query)}&ou={quote_plus(city_clean)}",
-        f"https://www.telecontact.ma/recherche/?q={quote_plus(query)}",
-        f"https://www.telecontact.ma/resultats.php?quoi={quote_plus(business_type)}&ou={quote_plus(city_clean)}",
+        f"https://www.telecontact.ma/{quote_plus(business_type.lower())}/{quote_plus(city_clean.lower())}",
+        f"https://www.telecontact.ma/{quote_plus(query.replace(chr(32), chr(45)).lower())}",
     ]
-    html_content = ""
-    for url in urls_to_try:
-        try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers={"User-Agent": UA, "Accept-Language": "fr-FR,fr;q=0.9"}) as client:
+
+    base_url = ""
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers={"User-Agent": UA, "Accept-Language": "fr-FR,fr;q=0.9"}) as client:
+        for url in urls_to_try:
+            try:
                 r = await client.get(url)
                 if r.status_code == 200 and len(r.text) > 2000:
-                    html_content = r.text
-                    print(f"✅ Telecontact OK: {url}")
+                    base_url = str(r.url)
+                    print(f"OK Telecontact OK: {base_url}")
                     break
                 else:
-                    print(f"⚠️ Telecontact {r.status_code}: {url}")
-        except Exception as e:
-            print(f"⚠️ Telecontact try failed: {e}")
-            continue
-    if not html_content:
-        print("⚠️ Telecontact HTTP 404 pour toutes les URLs")
-        return []
-    soup = BeautifulSoup(html_content, "lxml")
-    print(f"📞 Telecontact recherche: {query}")
+                    print(f"WARN Telecontact {r.status_code}: {url}")
+            except Exception as e:
+                print(f"WARN Telecontact try failed: {e}")
+                continue
 
-    # soup already created above
-    except Exception as e:
-        print(f"⚠️ Telecontact search failed: {e}")
+    if not base_url:
+        print("WARN Telecontact HTTP 404 pour toutes les URLs")
         return []
 
     results = []
-    # Telecontact structure: resultats dans des blocs .result-item ou .card ou .listing
-    items = soup.select(".result-item") or soup.select(".card") or soup.select(".listing-item") or soup.select(".item-result") or soup.select("[class*=result]")
+    print(f"[TEL] Telecontact recherche: {query}")
 
-    if not items:
-        # Fallback: chercher tous les h3/h2 qui sont des liens
-        items = soup.select("h2 a, h3 a")
-        for link in items[:30]:
-            name = link.get_text(strip=True)
-            if not name or len(name) < 3:
-                continue
-            href = link.get('href', '')
-            results.append({
-                "name": name,
-                "address": city_clean,
-                "phone": "",
-                "website": "",
-                "email": "",
-                "lat": None,
-                "lon": None,
-                "business_type": business_type,
-                "opening_hours": "",
-                "description": "",
-                "google_maps": "",
-                "_tc_href": href,
-            })
-        print(f"✅ Telecontact: {len(results)} resultats (fallback)")
-        return results
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers={"User-Agent": UA, "Accept-Language": "fr-FR,fr;q=0.9"}) as client:
+        for page in range(1, 4):
+            if page == 1:
+                page_url = base_url
+            else:
+                page_url = f"{base_url}&page={page}"
+            try:
+                r = await client.get(page_url)
+                if r.status_code != 200 or len(r.text) < 2000:
+                    print(f"WARN Telecontact page {page}: {r.status_code}")
+                    break
+            except Exception as e:
+                print(f"WARN Telecontact page {page} failed: {e}")
+                break
+
+            soup = BeautifulSoup(r.text, "lxml")
+            items = soup.select('.result-search-item-non-annonceur')
+            if not items:
+                print(f"WARN Telecontact page {page}: 0 items, arret")
+                break
+
+            for item in items:
+                name = item.get('data-rs-comp', '')
+                if not name:
+                    name_el = item.select_one('h2[itemprop="name"] a, h2 a')
+                    name = name_el.get_text(strip=True) if name_el else ''
+                if not name or len(name) < 3:
+                    continue
+
+                phone = ''
+                tel_el = item.select_one('[itemprop="telephone"], a[href^="tel:"]')
+                if tel_el:
+                    phone = re.sub(r'[\s\-]', '', tel_el.get_text(strip=True) or tel_el.get('href', '').replace('tel:', ''))
+
+                address = ''
+                addr_el = item.select_one('[itemprop="streetAddress"]')
+                if addr_el:
+                    address = _clean_address(addr_el.get_text(' ', strip=True))
+
+                website = ''
+                for link in item.select('a[href^="http"]'):
+                    href = link.get('href', '')
+                    if not _is_blocked(href) and 'facebook' not in href and 'instagram' not in href and 'telecontact' not in href:
+                        website = href
+                        break
+
+                email = ''
+                for a in item.select('a[href^="mailto:"]'):
+                    e = a['href'].replace('mailto:', '').split('?')[0].strip()
+                    if _is_good_email(e) and 'telecontact' not in e:
+                        email = e
+                        break
+
+                results.append({
+                    'name': name,
+                    'address': address or city_clean,
+                    'phone': phone,
+                    'website': website,
+                    'email': email,
+                    'lat': None,
+                    'lon': None,
+                    'business_type': business_type,
+                    'opening_hours': '',
+                    'description': '',
+                    'google_maps': '',
+                })
+
+            print(f"OK Telecontact page {page}: {len(items)} items")
+
+    print(f'OK Telecontact: {len(results)} resultats')
+    return results
+
 
     for item in items[:50]:
         # Nom
