@@ -273,7 +273,7 @@ async def scrape_google_maps(name: str, city: str) -> dict:
 async def scrape_telecontact(name: str, city: str) -> dict:
     out = {"phone": "", "address": "", "website": "", "email": ""}
     city_clean = city.split(",")[0].strip()
-    url = f"https://www.telecontact.ma/{quote_plus(name.lower())}/{quote_plus(city_clean.lower())}"
+    url = f"https://www.telecontact.ma/{quote_plus(name.lower())}/{quote_plus(city_clean.lower().replace(' ', '-'))}"
 
     try:
         async with httpx.AsyncClient(
@@ -381,7 +381,7 @@ async def search_telecontact_list(business_type: str, city: str) -> list:
     city_clean = city.split(',')[0].strip()
     query = f"{business_type} {city_clean}"
     urls_to_try = [
-        f"https://www.telecontact.ma/{quote_plus(business_type.lower())}/{quote_plus(city_clean.lower())}",
+        f"https://www.telecontact.ma/{quote_plus(business_type.lower().replace(' ', '-'))}/{quote_plus(city_clean.lower().replace(' ', '-'))}",
         f"https://www.telecontact.ma/{quote_plus(query.replace(chr(32), chr(45)).lower())}",
     ]
 
