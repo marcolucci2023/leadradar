@@ -34,7 +34,7 @@ async def create_campaign(
     campaign = Campaign(
         name=data.name,
         description=data.description,
-        owner_id=data.owner_id or "default",
+        owner_id=None,
     )
     db.add(campaign)
     await db.flush()

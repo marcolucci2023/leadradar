@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text
+from sqlalchemy import String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.user import Base
@@ -22,17 +22,16 @@ class Campaign(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(
         String(20),
-        default="draft",  # draft, active, paused, completed
+        default="draft",
     )
 
-    owner_id: Mapped[str] = mapped_column(
+    owner_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("users.id"),
+        nullable=True,
         index=True,
     )
-    owner: Mapped["User"] = relationship(back_populates="campaigns")  # noqa: F821
 
-    leads: Mapped[list["CampaignLead"]] = relationship(  # noqa: F821
+    leads: Mapped[list["CampaignLead"]] = relationship(
         back_populates="campaign",
         cascade="all, delete-orphan",
     )
@@ -74,11 +73,10 @@ class CampaignLead(Base):
         ForeignKey("leads.id", ondelete="CASCADE"),
         index=True,
     )
-    lead: Mapped["Lead"] = relationship()  # noqa: F821
 
     status: Mapped[str] = mapped_column(
         String(20),
-        default="pending",  # pending, message_ready, sent, replied
+        default="pending",
     )
     message: Mapped[str] = mapped_column(Text, default="")
 
