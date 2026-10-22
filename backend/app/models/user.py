@@ -50,5 +50,11 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
+    # Relation : un utilisateur peut avoir plusieurs campagnes
+    campaigns: Mapped[list["Campaign"]] = relationship(  # noqa: F821
+        back_populates="owner",
+        cascade="all, delete-orphan",
+    )
+
     def __repr__(self) -> str:
         return f"<User {self.email}>"

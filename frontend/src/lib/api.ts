@@ -30,6 +30,7 @@ export async function login(email: string, password: string) {
 }
 
 export interface LeadResult {
+  id?: string;
   name: string;
   address: string;
   phone?: string;
@@ -99,5 +100,26 @@ export async function sendLeadEmail(
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Erreur ${res.status}`);
   }
+  return res.json();
+}
+
+// ============================================================
+// Campaigns
+// ============================================================
+export async function createCampaign(name: string, leadIds: string[], description = "") {
+  const res = await request("/api/v1/campaigns/", {
+    method: "POST",
+    body: JSON.stringify({ name, description, lead_ids: leadIds }),
+  });
+  return res.json();
+}
+
+export async function listCampaigns() {
+  const res = await request("/api/v1/campaigns/");
+  return res.json();
+}
+
+export async function getCampaign(id: string) {
+  const res = await request(`/api/v1/campaigns/${id}`);
   return res.json();
 }

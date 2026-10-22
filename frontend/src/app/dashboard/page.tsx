@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { searchBusinesses, enrichAndScoreLead, sendLeadEmail } from "@/lib/api";
+import { searchBusinesses, enrichAndScoreLead, sendLeadEmail, createCampaign, listCampaigns, getCampaign } from "@/lib/api";
 import type { LeadResult } from "@/lib/api";
 
 // ============================================================
@@ -128,6 +128,10 @@ export default function DashboardPage() {
   const [searchInfo, setSearchInfo] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [sortBy, setSortBy] = useState<SortKey>("default");
+  const [activeTab, setActiveTab] = useState<"search" | "campaigns">("search");
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [showCampaignModal, setShowCampaignModal] = useState(false);
+  const [campaignName, setCampaignName] = useState("");
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const batchCancelRef = useRef(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(
@@ -418,7 +422,25 @@ export default function DashboardPage() {
         </div>
       </header>
 
+      {/* Tabs */}
+      <div className="max-w-7xl mx-auto px-6 pt-4 flex gap-2 border-b border-gray-800">
+        <button
+          onClick={() => setActiveTab("search")}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === "search" ? "border-emerald-500 text-white" : "border-transparent text-gray-400 hover:text-white"}`}
+        >
+          🔍 Recherche
+        </button>
+        <button
+          onClick={() => { setActiveTab("campaigns"); listCampaigns().then(setCampaigns).catch(() => {}); }}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === "campaigns" ? "border-emerald-500 text-white" : "border-transparent text-gray-400 hover:text-white"}`}
+        >
+          📧 Campagnes
+        </button>
+      </div>
+
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
+        {activeTab === "search" && (
+          <>
         {/* Search Form */}
         <form
           className="bg-gray-900 rounded-xl p-6 border border-gray-800"
@@ -775,6 +797,91 @@ export default function DashboardPage() {
             <p className="text-5xl mb-4">📡</p>
             <p className="text-lg font-medium text-gray-400">Aucune recherche effectuée</p>
             <p className="text-sm mt-1">Lance une recherche pour trouver des leads qualifiés</p>
+          </div>
+        )}
+          </>
+        )}
+
+        {activeTab === "campaigns" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Mes Campagnes</h2>
+              <button
+                onClick={() => setShowCampaignModal(true)}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors"
+              >
+                + Nouvelle Campagne
+              </button>
+            </div>
+
+            {campaigns.length === 0 ? (
+              <div className="text-center text-gray-500 py-20">
+                <p className="text-5xl mb-4">📧</p>
+                <p className="text-lg font-medium text-gray-400">Aucune campagne</p>
+                <p className="text-sm mt-1">Créez une campagne pour organiser vos leads</p>
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {campaigns.map((c: any) => (
+                  <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between hover:border-gray-700 transition-colors">
+                    <div>
+                      <h3 className="font-semibold text-white">{c.name}</h3>
+                      <p className="text-sm text-gray-400 mt-1">{c.description || "Pas de description"}</p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <span className="text-sm text-gray-400">{c.lead_count} leads</span>
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                        c.status === "draft" ? "bg-gray-700 text-gray-300" :
+                        c.status === "active" ? "bg-emerald-500/10 text-emerald-300" :
+                        "bg-yellow-500/10 text-yellow-300"
+                      }`}>
+                        {c.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {showCampaignModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
+                  <h3 className="text-lg font-bold mb-4">Nouvelle Campagne</h3>
+                  <input
+                    type="text"
+                    placeholder="Nom de la campagne"
+                    value={campaignName}
+                    onChange={(e) => setCampaignName(e.target.value)}
+                    className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white mb-4"
+                  />
+                  <p className="text-sm text-gray-400 mb-4">
+                    {leads.filter(l => (l.ai_score ?? 0) > 0).length} leads analyses seront ajoutes
+                  </p>
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      onClick={() => setShowCampaignModal(false)}
+                      className="px-4 py-2 text-gray-400 hover:text-white"
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!campaignName.trim()) return;
+                        const scoredLeads = leads.filter(l => (l.ai_score ?? 0) > 0);
+                        await createCampaign(campaignName, scoredLeads.map(l => l.id || ""));
+                        setShowCampaignModal(false);
+                        setCampaignName("");
+                        const updated = await listCampaigns();
+                        setCampaigns(updated);
+                      }}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium"
+                    >
+                      Creer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>
