@@ -10,7 +10,10 @@ import {
   createCampaign,
   listCampaigns,
   getCampaign,
+  getCampaignStats,
   updateCampaign,
+  deleteCampaign,
+  duplicateCampaign,
   addLeadsToCampaign,
   removeLeadFromCampaign,
 } from "@/lib/api";
@@ -73,7 +76,7 @@ function Toast({ toast, onClose }: { toast: { message: string; type: "success" |
   );
 }
 
-type Filter = "all" | "unanalyzed" | "analyzed" | "hot";
+type Filter = "all" | "unanalyzed" | "analyzed" | "hot" | "selected";
 type SortKey = "default" | "score" | "name";
 
 export default function DashboardPage() {
@@ -100,15 +103,22 @@ export default function DashboardPage() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const [sendingIds, setSendingIds] = useState<Set<string>>(new Set());
 
-  // Campaign detail / edit state
+  // Selection state (NEW)
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [campaignSource, setCampaignSource] = useState<"selected" | "analyzed">("selected");
+
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
   const [campaignDetail, setCampaignDetail] = useState<any>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
   const [editStatus, setEditStatus] = useState("draft");
   const [isEditing, setIsEditing] = useState(false);
   const [showAddLeads, setShowAddLeads] = useState(false);
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [campaignSearch, setCampaignSearch] = useState("");
+  const [campaignStats, setCampaignStats] = useState<any>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const showToast = useCallback((message: string, type: "success" | "error" | "info" = "info") => {
     setToast({ message, type });
@@ -140,18 +150,62 @@ export default function DashboardPage() {
   const stats = useMemo(() => {
     const analyzed = leads.filter((l) => l.ai_score != null);
     const avg = analyzed.length > 0 ? Math.round(analyzed.reduce((s, l) => s + (l.ai_score || 0), 0) / analyzed.length) : 0;
-    return { total: leads.length, analyzed: analyzed.length, hot: leads.filter((l) => (l.ai_score || 0) >= 70).length, avg };
-  }, [leads]);
+    return {
+      total: leads.length,
+      analyzed: analyzed.length,
+      hot: leads.filter((l) => (l.ai_score || 0) >= 70).length,
+      avg,
+      selected: selectedKeys.size,
+    };
+  }, [leads, selectedKeys]);
 
   const filteredLeads = useMemo(() => {
     let result = [...leads];
     if (filter === "unanalyzed") result = result.filter((l) => l.ai_score == null);
     else if (filter === "analyzed") result = result.filter((l) => l.ai_score != null);
     else if (filter === "hot") result = result.filter((l) => (l.ai_score || 0) >= 70);
+    else if (filter === "selected") result = result.filter((l) => selectedKeys.has(getLeadKey(l)));
     if (sortBy === "score") result.sort((a, b) => (b.ai_score ?? -1) - (a.ai_score ?? -1));
     else if (sortBy === "name") result.sort((a, b) => a.name.localeCompare(b.name));
     return result;
-  }, [leads, filter, sortBy]);
+  }, [leads, filter, sortBy, selectedKeys, getLeadKey]);
+
+  const filteredCampaigns = useMemo(() => {
+    if (!campaignSearch.trim()) return campaigns;
+    const q = campaignSearch.toLowerCase();
+    return campaigns.filter((c: any) =>
+      c.name.toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q)
+    );
+  }, [campaigns, campaignSearch]);
+
+  // Selection helpers (NEW)
+  const toggleSelect = useCallback((lead: LeadResult) => {
+    const key = getLeadKey(lead);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, [getLeadKey]);
+
+  const toggleSelectAll = useCallback(() => {
+    const visibleKeys = filteredLeads.map(getLeadKey);
+    const allSelected = visibleKeys.every((k) => selectedKeys.has(k));
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleKeys.forEach((k) => next.delete(k));
+      } else {
+        visibleKeys.forEach((k) => next.add(k));
+      }
+      return next;
+    });
+  }, [filteredLeads, selectedKeys, getLeadKey]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedKeys(new Set());
+  }, []);
 
   const handleSearch = useCallback(async () => {
     if (!token || !city.trim() || !businessType.trim()) return;
@@ -160,6 +214,7 @@ export default function DashboardPage() {
     setSearchInfo(null);
     setLeads([]);
     setFilter("all");
+    setSelectedKeys(new Set()); // Reset selection on new search
     try {
       const data = await searchBusinesses(token, city.trim(), businessType.trim(), radius);
       const results: LeadResult[] = Array.isArray(data) ? data : data.results || [];
@@ -188,7 +243,7 @@ export default function DashboardPage() {
       setLeads((prev) =>
         prev.map((l) =>
           getLeadKey(l) === key
-            ? { ...l, email: result.email || l.email, phone: result.phone || l.phone, website: result.website || l.website, address: result.address || l.address, instagram: result.instagram || "", facebook: result.facebook || "", ai_score: result.ai_score ?? null, ai_reason: result.ai_reason || "", ai_message_subject: result.ai_message_subject || "", ai_message_body: result.ai_message_body || "" }
+            ? { ...l, id: result.id || l.id, email: result.email || l.email, phone: result.phone || l.phone, website: result.website || l.website, address: result.address || l.address, instagram: result.instagram || "", facebook: result.facebook || "", ai_score: result.ai_score ?? null, ai_reason: result.ai_reason || "", ai_message_subject: result.ai_message_subject || "", ai_message_body: result.ai_message_body || "" }
             : l
         )
       );
@@ -201,6 +256,27 @@ export default function DashboardPage() {
       setAnalyzingIds(new Set(analyzingRef.current));
     }
   }, [token, businessType, city, getLeadKey, showToast]);
+
+  // NEW: Analyze only selected
+  const handleAnalyzeSelected = useCallback(async () => {
+    const targets = leads.filter((l) => selectedKeys.has(getLeadKey(l)) && l.ai_score == null);
+    if (targets.length === 0) {
+      showToast("Aucun lead selectionne a analyser (ou deja analyses)", "info");
+      return;
+    }
+    batchCancelRef.current = false;
+    setBatchProgress({ done: 0, total: targets.length });
+    let done = 0;
+    for (const lead of targets) {
+      if (batchCancelRef.current) break;
+      await handleAnalyze(lead);
+      done++;
+      setBatchProgress({ done, total: targets.length });
+      if (done < targets.length) await new Promise((r) => setTimeout(r, 8000));
+    }
+    setBatchProgress(null);
+    showToast(batchCancelRef.current ? `Batch arrete (${done}/${targets.length})` : `${done} leads analyses`, "success");
+  }, [leads, selectedKeys, getLeadKey, handleAnalyze, showToast]);
 
   const handleAnalyzeAll = useCallback(async () => {
     const targets = leads.filter((l) => l.ai_score == null);
@@ -220,10 +296,13 @@ export default function DashboardPage() {
   }, [leads, handleAnalyze, showToast]);
 
   const handleExportCSV = useCallback(() => {
-    if (leads.length === 0) return;
+    const toExport = selectedKeys.size > 0
+      ? leads.filter((l) => selectedKeys.has(getLeadKey(l)))
+      : leads;
+    if (toExport.length === 0) return;
     const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const headers = ["Nom", "Adresse", "Telephone", "Email", "Site web", "Instagram", "Facebook", "Score", "Raison", "Sujet", "Message"];
-    const rows = leads.map((l) => [l.name, l.address, l.phone, l.email, l.website, l.instagram, l.facebook, l.ai_score, l.ai_reason, l.ai_message_subject, l.ai_message_body].map(escape).join(","));
+    const rows = toExport.map((l) => [l.name, l.address, l.phone, l.email, l.website, l.instagram, l.facebook, l.ai_score, l.ai_reason, l.ai_message_subject, l.ai_message_body].map(escape).join(","));
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -232,8 +311,8 @@ export default function DashboardPage() {
     a.download = `leads-${city}-${businessType}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast("Export CSV telecharge", "success");
-  }, [leads, city, businessType, showToast]);
+    showToast(`${toExport.length} leads exportes`, "success");
+  }, [leads, selectedKeys, getLeadKey, city, businessType, showToast]);
 
   const copyText = useCallback(async (text: string, label = "Copie") => {
     try { await navigator.clipboard.writeText(text); showToast(label, "success"); }
@@ -260,8 +339,11 @@ export default function DashboardPage() {
 
   // ============ Campaign helpers ============
   const loadCampaigns = useCallback(async () => {
-    try { const data = await listCampaigns(); setCampaigns(data); }
-    catch { /* ignore */ }
+    try {
+      const data = await listCampaigns();
+      setCampaigns(data);
+      getCampaignStats().then(setCampaignStats).catch(() => {});
+    } catch { /* ignore */ }
   }, []);
 
   const openCampaignDetail = useCallback(async (id: string) => {
@@ -271,6 +353,7 @@ export default function DashboardPage() {
       const data = await getCampaign(id);
       setCampaignDetail(data);
       setEditName(data.name);
+      setEditDescription(data.description || "");
       setEditStatus(data.status);
       setIsEditing(false);
     } catch {
@@ -283,14 +366,39 @@ export default function DashboardPage() {
   const saveCampaignEdit = useCallback(async () => {
     if (!selectedCampaignId) return;
     try {
-      await updateCampaign(selectedCampaignId, { name: editName, status: editStatus });
+      await updateCampaign(selectedCampaignId, { name: editName, description: editDescription, status: editStatus });
       await openCampaignDetail(selectedCampaignId);
       await loadCampaigns();
       showToast("Campagne mise a jour", "success");
     } catch {
       showToast("Erreur de mise a jour", "error");
     }
-  }, [selectedCampaignId, editName, editStatus, openCampaignDetail, loadCampaigns, showToast]);
+  }, [selectedCampaignId, editName, editDescription, editStatus, openCampaignDetail, loadCampaigns, showToast]);
+
+  const handleDeleteCampaign = useCallback(async (id: string) => {
+    try {
+      const result = await deleteCampaign(id);
+      setConfirmDelete(null);
+      if (selectedCampaignId === id) {
+        setSelectedCampaignId(null);
+        setCampaignDetail(null);
+      }
+      await loadCampaigns();
+      showToast(`"${result.name}" supprimee`, "success");
+    } catch {
+      showToast("Erreur lors de la suppression", "error");
+    }
+  }, [selectedCampaignId, loadCampaigns, showToast]);
+
+  const handleDuplicateCampaign = useCallback(async (id: string) => {
+    try {
+      const result = await duplicateCampaign(id);
+      await loadCampaigns();
+      showToast(`"${result.name}" creee (${result.lead_count} leads)`, "success");
+    } catch {
+      showToast("Erreur lors de la duplication", "error");
+    }
+  }, [loadCampaigns, showToast]);
 
   const handleAddLeadsToCampaign = useCallback(async () => {
     if (!selectedCampaignId || selectedLeadIds.size === 0) return;
@@ -318,6 +426,37 @@ export default function DashboardPage() {
     }
   }, [selectedCampaignId, openCampaignDetail, loadCampaigns, showToast]);
 
+  // NEW: Create campaign from search selection
+  const handleCreateCampaignFromSelection = useCallback(async () => {
+    if (!campaignName.trim()) return;
+    let targetIds: string[];
+    if (campaignSource === "selected") {
+      // Only selected + analyzed leads
+      targetIds = leads
+        .filter((l) => selectedKeys.has(getLeadKey(l)) && l.ai_score != null && l.id)
+        .map((l) => l.id!);
+    } else {
+      // All analyzed leads
+      targetIds = leads
+        .filter((l) => l.ai_score != null && l.id)
+        .map((l) => l.id!);
+    }
+    if (targetIds.length === 0) {
+      showToast("Aucun lead analyse disponible", "error");
+      return;
+    }
+    try {
+      await createCampaign(campaignName, targetIds);
+      setShowCampaignModal(false);
+      setCampaignName("");
+      await loadCampaigns();
+      showToast(`Campagne creee avec ${targetIds.length} lead(s)`, "success");
+      setActiveTab("campaigns");
+    } catch {
+      showToast("Erreur lors de la creation", "error");
+    }
+  }, [campaignName, campaignSource, leads, selectedKeys, getLeadKey, loadCampaigns, showToast]);
+
   if (!ready) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-950 text-white">
@@ -327,6 +466,10 @@ export default function DashboardPage() {
   }
 
   const isBatchRunning = batchProgress !== null;
+  const selectedAnalyzedCount = leads.filter((l) => selectedKeys.has(getLeadKey(l)) && l.ai_score != null && l.id).length;
+  const allAnalyzedCount = leads.filter((l) => l.ai_score != null && l.id).length;
+  const visibleKeys = filteredLeads.map(getLeadKey);
+  const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((k) => selectedKeys.has(k));
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -347,7 +490,7 @@ export default function DashboardPage() {
 
       <div className="max-w-7xl mx-auto px-6 pt-4 flex gap-2 border-b border-gray-800">
         <button onClick={() => setActiveTab("search")} className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === "search" ? "border-emerald-500 text-white" : "border-transparent text-gray-400 hover:text-white"}`}>🔍 Recherche</button>
-        <button onClick={() => { setActiveTab("campaigns"); setSelectedCampaignId(null); loadCampaigns(); }} className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === "campaigns" ? "border-emerald-500 text-white" : "border-transparent text-gray-400 hover:text-white"}`}>📧 Campagnes</button>
+        <button onClick={() => { setActiveTab("campaigns"); setSelectedCampaignId(null); setCampaignDetail(null); loadCampaigns(); }} className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === "campaigns" ? "border-emerald-500 text-white" : "border-transparent text-gray-400 hover:text-white"}`}>📧 Campagnes</button>
       </div>
 
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
@@ -398,18 +541,62 @@ export default function DashboardPage() {
             )}
 
             {leads.length > 0 && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <StatCard icon="🎯" label="Leads trouves" value={stats.total} accent="bg-blue-500/10 text-blue-400" />
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <StatCard icon="🎯" label="Trouves" value={stats.total} accent="bg-blue-500/10 text-blue-400" />
+                <StatCard icon="☑️" label="Selectionnes" value={stats.selected} accent="bg-cyan-500/10 text-cyan-400" />
                 <StatCard icon="🤖" label="Analyses" value={`${stats.analyzed}/${stats.total}`} accent="bg-purple-500/10 text-purple-400" />
-                <StatCard icon="🔥" label="Haut potentiel" value={stats.hot} accent="bg-emerald-500/10 text-emerald-400" />
+                <StatCard icon="🔥" label="Chauds" value={stats.hot} accent="bg-emerald-500/10 text-emerald-400" />
                 <StatCard icon="📊" label="Score moyen" value={stats.avg ? `${stats.avg}/100` : "—"} accent="bg-yellow-500/10 text-yellow-400" />
+              </div>
+            )}
+
+            {/* ===== SELECTION ACTION BAR (NEW) ===== */}
+            {selectedKeys.size > 0 && (
+              <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-cyan-300 font-bold text-sm">
+                    ☑️ {selectedKeys.size} lead{selectedKeys.size > 1 ? "s" : ""} selectionne{selectedKeys.size > 1 ? "s" : ""}
+                  </span>
+                  <span className="text-xs text-cyan-200/70">
+                    ({selectedAnalyzedCount} deja analyse{selectedAnalyzedCount > 1 ? "s" : ""})
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleAnalyzeSelected}
+                    disabled={isBatchRunning}
+                    className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors"
+                  >
+                    🤖 Analyser la selection
+                  </button>
+                  <button
+                    onClick={() => { setCampaignSource("selected"); setShowCampaignModal(true); }}
+                    disabled={selectedAnalyzedCount === 0}
+                    className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors"
+                    title={selectedAnalyzedCount === 0 ? "Analyser d'abord les leads selectionnes" : ""}
+                  >
+                    📧 Creer campagne ({selectedAnalyzedCount})
+                  </button>
+                  <button
+                    onClick={clearSelection}
+                    className="text-gray-400 hover:text-white text-xs px-3 py-2 rounded-lg hover:bg-gray-800 transition-colors"
+                  >
+                    ✕ Deselectionner tout
+                  </button>
+                </div>
               </div>
             )}
 
             {leads.length > 0 && (
               <div className="flex flex-wrap items-center gap-3 justify-between">
                 <div className="flex gap-1 bg-gray-900 p-1 rounded-lg border border-gray-800 flex-wrap">
-                  {([{ key: "all", label: "Tous", count: stats.total }, { key: "unanalyzed", label: "Non analyses", count: stats.total - stats.analyzed }, { key: "analyzed", label: "Analyses", count: stats.analyzed }, { key: "hot", label: "Chauds", count: stats.hot }] as { key: Filter; label: string; count: number }[]).map((f) => (
+                  {([
+                    { key: "all", label: "Tous", count: stats.total },
+                    { key: "selected", label: "☑️ Selection", count: stats.selected },
+                    { key: "unanalyzed", label: "Non analyses", count: stats.total - stats.analyzed },
+                    { key: "analyzed", label: "Analyses", count: stats.analyzed },
+                    { key: "hot", label: "🔥 Chauds", count: stats.hot },
+                  ] as { key: Filter; label: string; count: number }[]).map((f) => (
                     <button key={f.key} onClick={() => setFilter(f.key)} className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${filter === f.key ? "bg-emerald-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}>
                       {f.label} <span className="opacity-60 ml-1">{f.count}</span>
                     </button>
@@ -421,7 +608,9 @@ export default function DashboardPage() {
                     <option value="score">Tri par score</option>
                     <option value="name">Tri par nom</option>
                   </select>
-                  <button onClick={handleExportCSV} className="bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg transition-colors">📥 CSV</button>
+                  <button onClick={handleExportCSV} className="bg-gray-900 border border-gray-800 hover:border-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg transition-colors">
+                    📥 CSV {selectedKeys.size > 0 ? `(${selectedKeys.size})` : ""}
+                  </button>
                   {stats.analyzed < stats.total && (
                     <button onClick={isBatchRunning ? () => { batchCancelRef.current = true; } : handleAnalyzeAll} disabled={loading} className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors">
                       {isBatchRunning ? "Arreter" : `Tout analyser (${stats.total - stats.analyzed})`}
@@ -449,6 +638,15 @@ export default function DashboardPage() {
                   <table className="w-full text-sm">
                     <thead className="bg-gray-800/50 text-gray-400 text-xs uppercase tracking-wider">
                       <tr>
+                        <th className="px-3 py-3 text-center font-medium w-10">
+                          <input
+                            type="checkbox"
+                            checked={allVisibleSelected}
+                            onChange={toggleSelectAll}
+                            className="accent-cyan-500 cursor-pointer"
+                            title="Tout selectionner / deselectionner"
+                          />
+                        </th>
                         <th className="px-4 py-3 text-left font-medium">Nom</th>
                         <th className="px-4 py-3 text-left font-medium">Contact</th>
                         <th className="px-4 py-3 text-left font-medium">Site / Reseaux</th>
@@ -458,11 +656,21 @@ export default function DashboardPage() {
                     </thead>
                     <tbody>
                       {filteredLeads.map((lead, idx) => {
-                        const key = getLeadKey(lead) + "__" + idx;
+                        const key = getLeadKey(lead);
+                        const uniqueKey = key + "__" + idx;
                         const isAnalyzing = analyzingIds.has(key);
                         const hasScore = lead.ai_score != null;
+                        const isSelected = selectedKeys.has(key);
                         return (
-                          <tr key={key} className="border-t border-gray-800 hover:bg-gray-800/30 transition-colors">
+                          <tr key={uniqueKey} className={`border-t border-gray-800 transition-colors ${isSelected ? "bg-cyan-500/5 hover:bg-cyan-500/10" : "hover:bg-gray-800/30"}`}>
+                            <td className="px-3 py-3 text-center">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleSelect(lead)}
+                                className="accent-cyan-500 cursor-pointer"
+                              />
+                            </td>
                             <td className="px-4 py-3">
                               <p className="font-medium text-white">{lead.name}</p>
                               <p className="text-xs text-gray-500 mt-0.5">{lead.address || "Adresse inconnue"}</p>
@@ -484,7 +692,7 @@ export default function DashboardPage() {
                               {hasScore ? <ScoreBadge score={lead.ai_score!} /> : <span className="text-gray-600 text-xs">—</span>}
                             </td>
                             <td className="px-4 py-3 text-center">
-                              <button onClick={() => handleAnalyze(lead)} disabled={isAnalyzing || isBatchRunning} className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium" aria-label={`Analyser ${lead.name}`}>
+                              <button onClick={() => handleAnalyze(lead)} disabled={isAnalyzing || isBatchRunning} className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium">
                                 {isAnalyzing ? "..." : hasScore ? "Refaire" : "Analyser"}
                               </button>
                             </td>
@@ -538,12 +746,41 @@ export default function DashboardPage() {
                 <p className="text-sm mt-1">Lance une recherche pour trouver des leads qualifies</p>
               </div>
             )}
+
+            {/* ===== CAMPAIGN MODAL (from search) ===== */}
+            {showCampaignModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
+                  <h3 className="text-lg font-bold mb-4">📧 Nouvelle Campagne</h3>
+                  <input type="text" placeholder="Nom de la campagne" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white mb-4 focus:outline-none focus:border-emerald-500" />
+
+                  <div className="space-y-2 mb-4">
+                    <label className="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700 transition-colors">
+                      <input type="radio" name="source" checked={campaignSource === "selected"} onChange={() => setCampaignSource("selected")} className="accent-emerald-500" />
+                      <span className="text-sm text-white">Leads selectionnes analyses</span>
+                      <span className="ml-auto text-xs text-emerald-300 font-bold">{selectedAnalyzedCount}</span>
+                    </label>
+                    <label className="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700 transition-colors">
+                      <input type="radio" name="source" checked={campaignSource === "analyzed"} onChange={() => setCampaignSource("analyzed")} className="accent-emerald-500" />
+                      <span className="text-sm text-white">Tous les leads analyses</span>
+                      <span className="ml-auto text-xs text-emerald-300 font-bold">{allAnalyzedCount}</span>
+                    </label>
+                  </div>
+
+                  <div className="flex gap-3 justify-end">
+                    <button onClick={() => { setShowCampaignModal(false); setCampaignName(""); }} className="px-4 py-2 text-gray-400 hover:text-white">Annuler</button>
+                    <button onClick={handleCreateCampaignFromSelection} disabled={!campaignName.trim()} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 rounded-lg text-sm font-medium">
+                      Creer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         )}
 
         {activeTab === "campaigns" && (
           <div className="space-y-6">
-            {/* ===== Campaign Detail View ===== */}
             {selectedCampaignId && campaignDetail ? (
               <div className="space-y-6">
                 <button onClick={() => { setSelectedCampaignId(null); setCampaignDetail(null); loadCampaigns(); }} className="text-sm text-gray-400 hover:text-white flex items-center gap-1 transition-colors">
@@ -556,6 +793,10 @@ export default function DashboardPage() {
                       <div>
                         <label className="block text-xs text-gray-400 mb-1">Nom</label>
                         <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-emerald-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Description</label>
+                        <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} placeholder="Ajouter une description..." className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-emerald-500 resize-none" />
                       </div>
                       <div>
                         <label className="block text-xs text-gray-400 mb-1">Statut</label>
@@ -572,8 +813,8 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-start justify-between">
-                      <div>
+                    <div className="flex items-start justify-between flex-wrap gap-3">
+                      <div className="flex-1 min-w-0">
                         <h2 className="text-xl font-bold text-white">{campaignDetail.name}</h2>
                         <p className="text-sm text-gray-400 mt-1">{campaignDetail.description || "Pas de description"}</p>
                         <div className="flex items-center gap-3 mt-2">
@@ -583,12 +824,15 @@ export default function DashboardPage() {
                           <span className="text-xs text-gray-500">{campaignDetail.leads?.length || 0} leads</span>
                         </div>
                       </div>
-                      <button onClick={() => setIsEditing(true)} className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs text-gray-300 transition-colors">✏️ Modifier</button>
+                      <div className="flex gap-2 flex-wrap">
+                        <button onClick={() => handleDuplicateCampaign(selectedCampaignId)} className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 rounded-lg text-xs text-blue-300 transition-colors">📋 Dupliquer</button>
+                        <button onClick={() => setIsEditing(true)} className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs text-gray-300 transition-colors">✏️ Modifier</button>
+                        <button onClick={() => setConfirmDelete(selectedCampaignId)} className="px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded-lg text-xs text-red-300 transition-colors">🗑️</button>
+                      </div>
                     </div>
                   )}
                 </div>
 
-                {/* Leads in campaign */}
                 <div className="flex items-center justify-between">
                   <h3 className="text-lg font-semibold">Leads de la campagne</h3>
                   <button onClick={() => setShowAddLeads(!showAddLeads)} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-medium transition-colors">
@@ -669,60 +913,65 @@ export default function DashboardPage() {
                 )}
               </div>
             ) : (
-              /* ===== Campaign List View ===== */
               <>
-                <div className="flex items-center justify-between">
+                {campaignStats && (
+                  <div className="grid grid-cols-3 gap-4">
+                    <StatCard icon="📧" label="Campagnes" value={campaignStats.total_campaigns} accent="bg-blue-500/10 text-blue-400" />
+                    <StatCard icon="👥" label="Leads en campagnes" value={campaignStats.total_leads} accent="bg-purple-500/10 text-purple-400" />
+                    <StatCard icon="🚀" label="Actives" value={campaignStats.active_campaigns} accent="bg-emerald-500/10 text-emerald-400" />
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-4 flex-wrap">
                   <h2 className="text-lg font-semibold">Mes Campagnes</h2>
-                  <button onClick={() => setShowCampaignModal(true)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors">+ Nouvelle Campagne</button>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <input
+                      type="text"
+                      placeholder="Rechercher une campagne..."
+                      value={campaignSearch}
+                      onChange={(e) => setCampaignSearch(e.target.value)}
+                      className="bg-gray-900 border border-gray-800 text-white text-sm rounded-lg px-3 py-2 w-56 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
                 </div>
 
-                {campaigns.length === 0 ? (
+                {filteredCampaigns.length === 0 ? (
                   <div className="text-center text-gray-500 py-20">
                     <p className="text-5xl mb-4">📧</p>
-                    <p className="text-lg font-medium text-gray-400">Aucune campagne</p>
-                    <p className="text-sm mt-1">Creez une campagne pour organiser vos leads</p>
+                    <p className="text-lg font-medium text-gray-400">{campaignSearch ? "Aucune campagne trouvee" : "Aucune campagne"}</p>
+                    <p className="text-sm mt-1">{campaignSearch ? "Essayez un autre terme" : "Lancez une recherche, selectionnez des leads, analysez-les et creez une campagne"}</p>
                   </div>
                 ) : (
                   <div className="grid gap-4">
-                    {campaigns.map((c: any) => (
-                      <div key={c.id} onClick={() => openCampaignDetail(c.id)} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between hover:border-emerald-500/50 transition-colors cursor-pointer group">
-                        <div>
-                          <h3 className="font-semibold text-white group-hover:text-emerald-300 transition-colors">{c.name}</h3>
-                          <p className="text-sm text-gray-400 mt-1">{c.description || "Pas de description"}</p>
+                    {filteredCampaigns.map((c: any) => (
+                      <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between hover:border-emerald-500/50 transition-colors group">
+                        <div className="flex-1 cursor-pointer min-w-0" onClick={() => openCampaignDetail(c.id)}>
+                          <h3 className="font-semibold text-white group-hover:text-emerald-300 transition-colors truncate">{c.name}</h3>
+                          <p className="text-sm text-gray-400 mt-1 truncate">{c.description || "Pas de description"}</p>
                         </div>
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3 flex-shrink-0">
                           <span className="text-sm text-gray-400">{c.lead_count} leads</span>
                           <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${c.status === "draft" ? "bg-gray-700 text-gray-300" : c.status === "active" ? "bg-emerald-500/10 text-emerald-300" : c.status === "paused" ? "bg-yellow-500/10 text-yellow-300" : "bg-blue-500/10 text-blue-300"}`}>
                             {c.status}
                           </span>
-                          <span className="text-gray-600 group-hover:text-emerald-400 transition-colors">→</span>
+                          <button onClick={(e) => { e.stopPropagation(); handleDuplicateCampaign(c.id); }} className="text-blue-400 hover:text-blue-300 text-xs px-2 py-1 rounded hover:bg-blue-500/10 transition-colors opacity-0 group-hover:opacity-100" title="Dupliquer">📋</button>
+                          <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(c.id); }} className="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded hover:bg-red-500/10 transition-colors opacity-0 group-hover:opacity-100" title="Supprimer">🗑️</button>
+                          <span className="text-gray-600 group-hover:text-emerald-400 transition-colors cursor-pointer" onClick={() => openCampaignDetail(c.id)}>→</span>
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
 
-                {showCampaignModal && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-                    <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-md">
-                      <h3 className="text-lg font-bold mb-4">Nouvelle Campagne</h3>
-                      <input type="text" placeholder="Nom de la campagne" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white mb-4 focus:outline-none focus:border-emerald-500" />
-                      <p className="text-sm text-gray-400 mb-4">
-                        {leads.filter((l) => l.ai_score != null && l.id).length} lead(s) analyse(s) disponible(s)
-                      </p>
-                      <div className="flex gap-3 justify-end">
-                        <button onClick={() => setShowCampaignModal(false)} className="px-4 py-2 text-gray-400 hover:text-white">Annuler</button>
-                        <button onClick={async () => {
-                          if (!campaignName.trim()) return;
-                          const scoredIds = leads.filter((l) => l.ai_score != null && l.id).map((l) => l.id!);
-                          await createCampaign(campaignName, scoredIds);
-                          setShowCampaignModal(false);
-                          setCampaignName("");
-                          await loadCampaigns();
-                          showToast("Campagne creee", "success");
-                        }} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium">
-                          Creer
-                        </button>
+                {confirmDelete && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                    <div className="bg-gray-900 border border-red-500/30 rounded-2xl p-6 w-full max-w-sm text-center">
+                      <p className="text-4xl mb-3">🗑️</p>
+                      <h3 className="text-lg font-bold text-white mb-2">Supprimer cette campagne ?</h3>
+                      <p className="text-sm text-gray-400 mb-6">Cette action est irreversible. Les leads ne seront pas supprimes, seulement retires de la campagne.</p>
+                      <div className="flex gap-3 justify-center">
+                        <button onClick={() => setConfirmDelete(null)} className="px-4 py-2 text-gray-400 hover:text-white border border-gray-700 rounded-lg text-sm">Annuler</button>
+                        <button onClick={() => handleDeleteCampaign(confirmDelete)} className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-sm font-medium text-white">Supprimer</button>
                       </div>
                     </div>
                   </div>
